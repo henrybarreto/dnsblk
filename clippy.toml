@@ -1,0 +1,14 @@
+cognitive-complexity-threshold = 15
+excessive-nesting-threshold = 5
+
+doc-valid-idents = [
+  "OVSDB",
+  "JSON-RPC",
+  "JSON",
+  "RPC",
+  "TLS",
+  "TCP",
+  "UUID",
+  "IPv4",
+  "IPv6",
+]

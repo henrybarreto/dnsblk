@@ -1,0 +1,9 @@
+# DNS Deny List
+# One domain per line. Lines starting with # are comments.
+# Domains are matched exactly (including subdomains).
+
+doubleclick.net
+google-analytics.com
+googletagmanager.com
+ads.example.com
+tracker.evil.org
