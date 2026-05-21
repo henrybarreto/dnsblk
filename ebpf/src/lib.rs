@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use core::panic::PanicInfo;
+
 use aya_ebpf::{
     bindings::{TC_ACT_OK, TC_ACT_SHOT},
     macros::{classifier, map},
@@ -63,6 +65,12 @@ struct BlockEvent {
     _pad: [u8; 2],
     // NOTE: The raw wire-format domain name bytes copied from the DNS question section (null-terminated, truncated at MAX_DOMAIN_LEN).
     domain: [u8; MAX_DOMAIN_LEN],
+}
+
+#[panic_handler]
+fn panic(_info: &PanicInfo<'_>) -> ! {
+    // eBPF programs must not unwind; treat panic as unreachable.
+    unsafe { core::hint::unreachable_unchecked() }
 }
 
 #[classifier]
@@ -259,10 +267,4 @@ pub fn dnsblk(ctx: TcContext) -> i32 {
         // NOTE: Domain not found in the deny map — allow the packet to pass through normally.
         TC_ACT_OK
     }
-}
-
-#[cfg(not(test))]
-#[panic_handler] // (3)
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
 }

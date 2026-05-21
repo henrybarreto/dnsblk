@@ -1,0 +1,18 @@
+[Unit]
+Description=dnsblk DNS blocker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=LOG=info
+ExecStart=/usr/local/bin/dnsblk --interface wlp0s20f3 /etc/deny.txt
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

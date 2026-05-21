@@ -24,8 +24,8 @@ use aya::{
 
 /// Embedded eBPF object bytes.
 pub const BPF_BYTES: &[u8] = include_bytes_aligned!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../dnsblk-ebpf/target/bpfel-unknown-none/release/libdnsblk_ebpf.so"
+    env!("OUT_DIR"),
+    "/libdnsblk_ebpf.so"
 ));
 
 /// FNV-1a 64-bit offset basis.

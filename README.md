@@ -33,11 +33,11 @@ Or with Cargo directly:
 
 ```bash
 mkdir -p /tmp/dnsblk-target
-cargo build --release --manifest-path dnsblk-ebpf/Cargo.toml \
+cargo build --release --manifest-path ebpf/Cargo.toml \
     --target-dir /tmp/dnsblk-target/ebpf
 cp /tmp/dnsblk-target/ebpf/bpfel-unknown-none/release/libdnsblk_ebpf.so \
-    dnsblk-ebpf/target/bpfel-unknown-none/release/libdnsblk_ebpf.so
-CARGO_TARGET_DIR=/tmp/dnsblk-target/user cargo run -- \
+    ebpf/target/bpfel-unknown-none/release/libdnsblk_ebpf.so
+CARGO_TARGET_DIR=/tmp/dnsblk-target/user cargo run -p dnsblk -- \
     --interface eth0 /etc/deny.txt
 ```
 
