@@ -10,7 +10,7 @@ use aya_ebpf::{
     programs::TcContext,
 };
 use network_types::{
-    eth::EtherType,
+    eth::{EthHdr, EtherType},
     ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
     udp::UdpHdr,
 };
@@ -77,54 +77,37 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 // NOTE: TC classifier entry point. Called by the kernel for every packet on the attached interface.
 // NOTE: Returns TC_ACT_OK (pass) or TC_ACT_SHOT (drop / -1).
 pub fn dnsblk(ctx: TcContext) -> i32 {
-    // NOTE: Load the 2-byte EtherType field at offset 12 in the Ethernet frame to determine L3 protocol.
-    // NOTE: The '12' offset is where the EtherType field is in the Ethernet header. We load it
-    // first to determine how to parse the rest of the packet.
-    let Ok(ether_type) = ctx.load::<u16>(12) else {
+    // NOTE: Load the entire Ethernet header (14 bytes) to get both source/destination MAC and
+    // EtherType in one load.
+    let Ok(eth_hdr) = ctx.load::<EthHdr>(0) else {
         // NOTE: If loading fails (packet too short or malformed), pass it through unchanged.
         return TC_ACT_OK;
     };
 
     // NOTE: Branch on EtherType to parse either IPv4 or IPv6. Each arm returns the UDP header offset, src IP, and dst IP.
-    let (udp_off, src_addr, dst_addr) = match ether_type {
-        // NOTE: Match against IPv4 EtherType (0x0800).
-        x if x == (EtherType::Ipv4 as u16) => {
-            // NOTE: Load the IPv4 header starting right after the Ethernet header (offset 14).
+    let (udp_off, src_addr, dst_addr) = match eth_hdr.ether_type {
+        EtherType::Ipv4 => {
             let Ok(ipv4) = ctx.load::<Ipv4Hdr>(ETH_HDR_LEN) else {
-                // NOTE: If the IPv4 header can't be loaded (packet too short), pass the packet through.
                 return TC_ACT_OK;
             };
-
-            // NOTE: If the L4 protocol is not UDP, this packet is not DNS — pass it through.
             if ipv4.proto != IpProto::Udp {
                 return TC_ACT_OK;
             }
-
-            // NOTE: Return (UDP offset, source IP, destination IP).
-            // NOTE: UDP header starts after the IPv4 header. IHL (Internet Header Length) is in 4-byte words, so multiply by 4.
-            // NOTE: src_addr and dst_addr are converted from network byte order (big-endian) to host byte order.
             (
                 ETH_HDR_LEN + (ipv4.ihl() as usize) * 4,
                 u32::from_be(ipv4.src_addr),
                 u32::from_be(ipv4.dst_addr),
             )
         }
-        // NOTE: Match against IPv6 EtherType (0x86DD).
-        x if x == (EtherType::Ipv6 as u16) => {
-            // NOTE: Load the IPv6 header starting right after the Ethernet header (offset 14).
+        EtherType::Ipv6 => {
             let Ok(ipv6) = ctx.load::<Ipv6Hdr>(ETH_HDR_LEN) else {
-                // NOTE: If the IPv6 header can't be loaded (packet too short), pass the packet through.
                 return TC_ACT_OK;
             };
-            // NOTE: If the next header is not UDP, this packet is not DNS — pass it through.
             if ipv6.next_hdr != IpProto::Udp {
                 return TC_ACT_OK;
             }
-            // NOTE: Keep event shape unchanged; IPv6 addresses are not logged in current format (set both to 0).
-            // NOTE: UDP header follows immediately after the fixed 40-byte IPv6 header (no variable IHL like IPv4).
             (ETH_HDR_LEN + Ipv6Hdr::LEN, 0, 0)
         }
-        // NOTE: Any other EtherType (ARP, VLAN, etc.) — not IP, so pass the packet through.
         _ => return TC_ACT_OK,
     };
 
