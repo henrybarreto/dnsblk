@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     fs,
     hash::BuildHasher,
+    os::fd::AsRawFd,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -81,7 +82,6 @@ pub enum WorkerMsg {
 }
 
 /// Validate that the Rust-side `BlockEvent` matches the eBPF-side layout.
-#[must_use]
 pub const fn validate_block_event() -> bool {
     std::mem::size_of::<BlockEvent>() == 4 + 4 + 2 + 2 + 2 + 2 + MAX_DOMAIN_LEN
 }
@@ -156,23 +156,6 @@ pub const fn qtype_name(qtype: u16) -> &'static str {
         DNS_TYPE_AAAA => "AAAA",
         _ => "OTHER",
     }
-}
-
-/// List available network interfaces (excluding loopback).
-#[must_use]
-pub fn list_interfaces() -> Vec<String> {
-    let mut names = Vec::new();
-    if let Ok(entries) = fs::read_dir("/sys/class/net") {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name != "lo" {
-                    names.push(name.to_string());
-                }
-            }
-        }
-    }
-    names.sort();
-    names
 }
 
 /// Load deny list entries from a file into the eBPF deny map.
@@ -263,7 +246,7 @@ pub fn is_root() -> bool {
 /// # Errors
 ///
 /// Returns an error if eBPF loading, map operations, or ringbuf access fails.
-pub fn run_blocker(
+pub fn run_ebpf(
     ifaces: &[String],
     deny_file: &Path,
     tx: mpsc::Sender<WorkerMsg>,
@@ -300,46 +283,55 @@ pub fn run_blocker(
         deny_file.display()
     )));
 
-    let ring = RingBuf::try_from(bpf.take_map("EVENTS").context("EVENTS map not found")?)?;
+    let mut ring = RingBuf::try_from(bpf.take_map("EVENTS").context("EVENTS map not found")?)?;
+    let ring_fd = ring.as_raw_fd();
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .context("Failed to create runtime")?;
+    while !stop.load(Ordering::Relaxed) {
+        let mut poll_fd = libc::pollfd {
+            fd: ring_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
 
-    runtime.block_on(async move {
-        let async_ring =
-            tokio::io::unix::AsyncFd::new(ring).context("Failed to open ringbuf fd")?;
-        let mut async_ring = async_ring;
-
-        while !stop.load(Ordering::Relaxed) {
-            let mut guard =
-                match tokio::time::timeout(Duration::from_millis(500), async_ring.readable_mut())
-                    .await
-                {
-                    Ok(Ok(guard)) => guard,
-                    Ok(Err(e)) => return Err(anyhow::anyhow!("RingBuf wait failed: {e}")),
-                    Err(_) => continue,
-                };
-
-            let ring = guard.get_inner_mut();
-            while let Some(item) = ring.next() {
-                if item.len() < std::mem::size_of::<BlockEvent>() {
-                    continue;
-                }
-                let ev: BlockEvent =
-                    unsafe { std::ptr::read_unaligned(item.as_ptr().cast::<BlockEvent>()) };
-                let domain = wire_to_domain(&ev.domain);
-                let msg = format!("Blocked ({}) : {domain}", qtype_name(ev.qtype));
-                let _ = tx.send(WorkerMsg::Blocked(msg));
+        let poll_result = unsafe { libc::poll(&mut poll_fd, 1, 500) };
+        if poll_result < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
             }
-
-            guard.clear_ready();
+            return Err(err).context("RingBuf poll failed");
         }
 
-        Ok::<(), anyhow::Error>(())
-    })?;
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if poll_result == 0 {
+            continue;
+        }
+
+        if (poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+            return Err(anyhow::anyhow!(
+                "RingBuf poll returned error flags: revents={:#x}",
+                poll_fd.revents
+            ));
+        }
+
+        if (poll_fd.revents & libc::POLLIN) == 0 {
+            continue;
+        }
+
+        while let Some(item) = ring.next() {
+            if item.len() < std::mem::size_of::<BlockEvent>() {
+                continue;
+            }
+            let ev: BlockEvent =
+                unsafe { std::ptr::read_unaligned(item.as_ptr().cast::<BlockEvent>()) };
+            let domain = wire_to_domain(&ev.domain);
+            let msg = format!("Blocked ({}) : {domain}", qtype_name(ev.qtype));
+            let _ = tx.send(WorkerMsg::Blocked(msg));
+        }
+    }
 
     Ok(())
 }

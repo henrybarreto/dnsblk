@@ -11,13 +11,16 @@ use std::{
         mpsc, Arc,
     },
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use signal_hook::flag;
 
-use dnsblk::{check_domain, is_root, run_blocker, validate_block_event, WorkerHandle, WorkerMsg};
+use dnsblk::{check_domain, is_root, run_ebpf, validate_block_event, WorkerHandle, WorkerMsg};
+
+const SHUTDOWN_POLL: Duration = Duration::from_millis(500);
 
 /// DNS-blocking CLI that attaches an eBPF tc classifier to block DNS queries
 /// for domains in the deny list.
@@ -46,7 +49,7 @@ fn main() {
     }
 
     let args = Args::parse();
-    match run_cli(args) {
+    match run(args) {
         Ok(()) => {}
         Err(e) => {
             log::error!("{e:#}");
@@ -56,48 +59,46 @@ fn main() {
 }
 
 /// Entry point for CLI mode.
-fn run_cli(args: Args) -> Result<()> {
+fn run(args: Args) -> Result<()> {
     if !args.list.exists() {
         anyhow::bail!("Deny list file not found: {}", args.list.display());
     }
 
     let (tx, rx) = mpsc::channel::<WorkerMsg>();
+
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
-    let ifaces = vec![args.interface];
+
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+
+    flag::register(libc::SIGINT, Arc::clone(&shutdown_requested))
+        .context("Failed to register SIGINT handler")?;
+    flag::register(libc::SIGTERM, Arc::clone(&shutdown_requested))
+        .context("Failed to register SIGTERM handler")?;
+
+    let interfaces = vec![args.interface];
     let deny_file = args.list;
 
     let join = thread::spawn(move || {
-        let result = run_blocker(&ifaces, &deny_file, tx.clone(), stop_clone);
+        let result = run_ebpf(&interfaces, &deny_file, tx.clone(), stop_clone);
         if let Err(err) = result {
             let _ = tx.send(WorkerMsg::Error(format!("{err:#}")));
         }
+
         let _ = tx.send(WorkerMsg::Stopped);
     });
 
     let handle = WorkerHandle { stop, join };
 
-    let stop_signal = handle.stop.clone();
-    thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build();
-        let Ok(rt) = rt else {
-            log::error!("Failed to create signal runtime");
-            return;
-        };
-        rt.block_on(async {
-            let _ = tokio::signal::ctrl_c().await;
-        });
-        log::info!("Shutting down...");
-        stop_signal.store(true, Ordering::Relaxed);
-    });
-
     let mut recent_domains: StdHashMap<String, (Instant, u32)> = StdHashMap::new();
 
     loop {
-        match rx.recv() {
+        if shutdown_requested.load(Ordering::Relaxed) && !handle.stop.load(Ordering::Relaxed) {
+            log::info!("Shutting down...");
+            handle.stop.store(true, Ordering::Relaxed);
+        }
+
+        match rx.recv_timeout(SHUTDOWN_POLL) {
             Ok(WorkerMsg::Info(line)) => {
                 log::info!("{line}");
             }
@@ -115,7 +116,15 @@ fn run_cli(args: Args) -> Result<()> {
             Ok(WorkerMsg::Error(line)) => {
                 log::error!("{line}");
             }
-            Ok(WorkerMsg::Stopped) | Err(_) => {
+            Ok(WorkerMsg::Stopped) => {
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if handle.stop.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 break;
             }
         }

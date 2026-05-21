@@ -188,7 +188,7 @@ pub fn dnsblk(ctx: TcContext) -> i32 {
         }
 
         // NOTE: Load a single byte from the packet at the current position in the question section.
-        let Ok(mut byte) = ctx.load::<u8>(pos) else {
+        let Ok(byte) = ctx.load::<u8>(pos) else {
             // NOTE: If the byte can't be loaded (out of bounds), pass the packet through (safer than dropping unknown traffic).
             return TC_ACT_OK;
         };
@@ -261,7 +261,8 @@ pub fn dnsblk(ctx: TcContext) -> i32 {
     }
 }
 
-#[panic_handler]
+#[cfg(not(test))]
+#[panic_handler] // (3)
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    unsafe { core::hint::unreachable_unchecked() }
+    loop {}
 }

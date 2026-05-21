@@ -5,8 +5,6 @@ RUST_STABLE ?= +stable
 RUST_NIGHTLY ?= +nightly
 IFACE ?= enp4s0
 DENY_FILE ?= /etc/deny.txt
-CARGO_TARGET_DIR ?= /tmp/dnsblk-target-0
-
 help:
 	@echo "Targets:"
 	@echo "  make build        Build eBPF (nightly) + CLI binary (stable)"
@@ -18,20 +16,15 @@ help:
 	@echo "  IFACE=<iface>     Network interface (default: enp4s0)"
 	@echo "  DENY_FILE=<path>  Deny list path (default: /etc/deny.txt)"
 
-build: build-ebpf
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR)/user 	cargo $(RUST_STABLE) build -p dnsblk
-
 build-ebpf:
-	cd $(EBPF_DIR) && CARGO_TARGET_DIR=$(CARGO_TARGET_DIR)/ebpf \
-		cargo $(RUST_NIGHTLY) build --release --target bpfel-unknown-none -Z build-std=core
-	mkdir -p $(EBPF_DIR)/target/bpfel-unknown-none/release
-	cp $(CARGO_TARGET_DIR)/ebpf/bpfel-unknown-none/release/libdnsblk_ebpf.so \
-	   $(EBPF_DIR)/target/bpfel-unknown-none/release/libdnsblk_ebpf.so
+	cd $(EBPF_DIR) && cargo $(RUST_NIGHTLY) build --release --target bpfel-unknown-none -Z build-std=core
+
+build: build-ebpf
+	cargo $(RUST_STABLE) build -p dnsblk
 
 run: build
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR)/user 	cargo $(RUST_STABLE) run -p dnsblk -- --interface $(IFACE) $(DENY_FILE)
+	cargo $(RUST_STABLE) run -p dnsblk -- --interface $(IFACE) $(DENY_FILE)
 
 clean:
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR)/user 	cargo clean -p dnsblk
-	cd $(EBPF_DIR) && CARGO_TARGET_DIR=$(CARGO_TARGET_DIR)/ebpf cargo clean
-	rm -rf $(EBPF_DIR)/target
+	cargo clean
+	cd $(EBPF_DIR) && cargo clean
