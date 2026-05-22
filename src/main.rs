@@ -27,9 +27,8 @@ const SHUTDOWN_POLL: Duration = Duration::from_millis(500);
 #[derive(Parser)]
 #[command(name = "dnsblk", about = "eBPF DNS blocker — CLI mode")]
 struct Args {
-    /// Network interface to attach the eBPF filter to
-    #[arg(default_value = "eth0", short, long)]
-    interface: String,
+    #[arg(short, long, help = "Network interfaces to attach to (e.g. 'eth0')")]
+    interface: Vec<String>,
 
     /// Deny list file (one domain per line, '#' for comments)
     list: PathBuf,
@@ -76,7 +75,7 @@ fn run(args: Args) -> Result<()> {
     flag::register(libc::SIGTERM, Arc::clone(&shutdown_requested))
         .context("Failed to register SIGTERM handler")?;
 
-    let interfaces = vec![args.interface];
+    let interfaces = args.interface;
     let deny_file = args.list;
 
     let join = thread::spawn(move || {

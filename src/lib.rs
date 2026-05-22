@@ -247,7 +247,7 @@ pub fn is_root() -> bool {
 ///
 /// Returns an error if eBPF loading, map operations, or ringbuf access fails.
 pub fn run_ebpf(
-    ifaces: &[String],
+    interfaces: &[String],
     deny_file: &Path,
     tx: mpsc::Sender<WorkerMsg>,
     stop: Arc<AtomicBool>,
@@ -263,15 +263,15 @@ pub fn run_ebpf(
     let attach_type = TcAttachType::Egress;
     program.load().context("Failed to load tc classifier")?;
 
-    for iface in ifaces {
+    for interface in interfaces {
         program
-            .attach(iface, attach_type)
-            .with_context(|| format!("Failed to attach eBPF program to interface {iface}"))?;
+            .attach(interface, attach_type)
+            .with_context(|| format!("Failed to attach eBPF program to interface {interface}"))?;
     }
 
     let _ = tx.send(WorkerMsg::Info(format!(
         "Attached to {}",
-        ifaces.join(", ")
+        interfaces.join(", ")
     )));
 
     let mut deny_map: AyaHashMap<MapData, [u8; 8], u8> =
