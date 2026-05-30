@@ -5,7 +5,6 @@ use std::{
     collections::HashMap,
     fs,
     hash::BuildHasher,
-    os::fd::AsRawFd,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -233,8 +232,20 @@ pub fn check_domain<S: BuildHasher>(
 /// Check if the current process is running as root (euid 0).
 #[must_use]
 pub fn is_root() -> bool {
-    // SAFETY: geteuid is a simple libc call with no side effects.
-    unsafe { libc::geteuid() == 0 }
+    let Ok(status) = fs::read_to_string("/proc/self/status") else {
+        return false;
+    };
+
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:") {
+            let mut fields = rest.split_whitespace();
+            let _real_uid = fields.next();
+            let effective_uid = fields.next();
+            return effective_uid == Some("0");
+        }
+    }
+
+    false
 }
 
 /// Run the eBPF blocker worker in the current thread.
@@ -284,44 +295,11 @@ pub fn run_ebpf(
     )));
 
     let mut ring = RingBuf::try_from(bpf.take_map("EVENTS").context("EVENTS map not found")?)?;
-    let ring_fd = ring.as_raw_fd();
 
     while !stop.load(Ordering::Relaxed) {
-        let mut poll_fd = libc::pollfd {
-            fd: ring_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-
-        let poll_result = unsafe { libc::poll(&mut poll_fd, 1, 500) };
-        if poll_result < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(err).context("RingBuf poll failed");
-        }
-
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-
-        if poll_result == 0 {
-            continue;
-        }
-
-        if (poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
-            return Err(anyhow::anyhow!(
-                "RingBuf poll returned error flags: revents={:#x}",
-                poll_fd.revents
-            ));
-        }
-
-        if (poll_fd.revents & libc::POLLIN) == 0 {
-            continue;
-        }
-
+        let mut drained = false;
         while let Some(item) = ring.next() {
+            drained = true;
             if item.len() < std::mem::size_of::<BlockEvent>() {
                 continue;
             }
@@ -330,6 +308,14 @@ pub fn run_ebpf(
             let domain = wire_to_domain(&ev.domain);
             let msg = format!("Blocked ({}) : {domain}", qtype_name(ev.qtype));
             let _ = tx.send(WorkerMsg::Blocked(msg));
+        }
+
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if !drained {
+            std::thread::sleep(Duration::from_millis(500));
         }
     }
 

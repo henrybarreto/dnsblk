@@ -200,7 +200,6 @@ dependencies = [
  "aya",
  "clap",
  "env_logger",
- "libc",
  "log",
  "signal-hook",
 ]

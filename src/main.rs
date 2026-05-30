@@ -16,6 +16,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 use dnsblk::{check_domain, is_root, run_ebpf, validate_block_event, WorkerHandle, WorkerMsg};
@@ -70,9 +71,9 @@ fn run(args: Args) -> Result<()> {
 
     let shutdown_requested = Arc::new(AtomicBool::new(false));
 
-    flag::register(libc::SIGINT, Arc::clone(&shutdown_requested))
+    flag::register(SIGINT, Arc::clone(&shutdown_requested))
         .context("Failed to register SIGINT handler")?;
-    flag::register(libc::SIGTERM, Arc::clone(&shutdown_requested))
+    flag::register(SIGTERM, Arc::clone(&shutdown_requested))
         .context("Failed to register SIGTERM handler")?;
 
     let interfaces = args.interface;
