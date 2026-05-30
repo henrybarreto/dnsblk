@@ -9,6 +9,7 @@ use aya_ebpf::{
     maps::{HashMap, RingBuf},
     programs::TcContext,
 };
+use aya_log_ebpf::info;
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
@@ -241,6 +242,14 @@ pub fn dnsblk(ctx: TcContext) -> i32 {
     // NOTE: at runtime. In practice, if the map exists and the key is the correct size, this is sound.
     // NOTE: Look up the domain hash in the deny map. If found (Some), the domain is on the blocklist.
     if unsafe { DENY_MAP.get(&hash_key) }.is_some() {
+        info!(
+            &ctx,
+            "blocked dns qtype={} hash={:x} src_port={} dst_port={}",
+            qtype,
+            hash,
+            src_port,
+            dst_port
+        );
         // NOTE: Send the BlockEvent to userspace via the ring buffer. The `0` flag means no special behavior.
         // NOTE: `let _ =` ignores the Result — if the ring buffer is full, the event is silently dropped (non-blocking).
         let _ = EVENTS.output(&event, 0);
